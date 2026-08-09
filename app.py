@@ -8,7 +8,7 @@ st.title("Emergency Department Multimodal Triage System")
 st.write("Predicts Emergency Severity Index (ESI) tiers using Bio-ClinicalBERT semantic embeddings + XGBoost.")
 st.caption("⚠️ Research/educational prototype only. Not validated for clinical decision-making.")
 
-BERT_API_URL = "https://esi-triage-bioclinicalbert-api-1042542474746.us-central1.run.app"  # <-- update this
+BERT_API_URL = "https://esi-triage-bioclinicalbert-api-1042542474746.us-central1.run.app/embed"  # <-- update this
 
 
 @st.cache_resource
