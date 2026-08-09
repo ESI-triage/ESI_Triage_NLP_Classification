@@ -1,32 +1,44 @@
 import streamlit as st
 import numpy as np
-import torch
 import joblib
-from transformers import AutoTokenizer, AutoModel
+import requests
 
-# Set page title and layout
 st.set_page_config(page_title="ED Triage Assistant", layout="centered")
-
 st.title("Emergency Department Multimodal Triage System")
 st.write("Predicts Emergency Severity Index (ESI) tiers using Bio-ClinicalBERT semantic embeddings + XGBoost.")
+st.caption("⚠️ Research/educational prototype only. Not validated for clinical decision-making.")
 
-# Load Bio-ClinicalBERT and XGBoost (Cached so it loads only once into RAM)
+BERT_API_URL = "https://esi-triage-bioclinicalbert-api-1042542474746.us-central1.run.app"  # <-- update this
+
+
 @st.cache_resource
-def load_model():
-    model_name = "emilyalsentzer/Bio_ClinicalBERT"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    bert_model = AutoModel.from_pretrained(model_name)
-    bert_model.eval()
-    
-    xgb = joblib.load("final_best_xgb_triage_model.pkl")
-    return tokenizer, bert_model, xgb
+def load_xgb_model():
+    return joblib.load("final_best_xgb_triage_model.pkl")
 
-tokenizer, raw_bert, xgb_model = load_model()
 
-# Input Form
+xgb_model = load_xgb_model()
+
+
+def get_bert_embedding(text: str) -> np.ndarray:
+    try:
+        response = requests.post(BERT_API_URL, json={"text": text}, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        return np.array(data["embedding"]).reshape(1, -1)
+    except requests.exceptions.Timeout:
+        st.error("The embedding service timed out. It may be cold-starting — try again in a moment.")
+        st.stop()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Could not reach the embedding service: {e}")
+        st.stop()
+
+
 with st.form("triage_form"):
-    clinical_note = st.text_area("Clinical Triage Note", "54yo F reports fever with mild shortness of breath on exertion...")
-    
+    clinical_note = st.text_area(
+        "Clinical Triage Note",
+        "54yo F reports fever with mild shortness of breath on exertion...",
+    )
+
     col1, col2 = st.columns(2)
     with col1:
         sbp = st.number_input("Systolic BP (mmHg)", value=120)
@@ -34,27 +46,26 @@ with st.form("triage_form"):
         hr = st.number_input("Heart Rate (bpm)", value=75)
         rr = st.number_input("Respiratory Rate", value=16)
     with col2:
-        temp = st.number_input("Temperature (°C)", value=37.0)
+        temp = st.number_input("Temperature (\u00b0C)", value=37.0)
         spo2 = st.number_input("SpO2 (%)", value=98.0)
         pain = st.slider("Pain Score (0-10)", 0, 10, 2)
-        
+
     submit = st.form_submit_button("Predict ESI Level")
 
-# Prediction Logic
 if submit:
-    # Extract BERT embedding
-    encoded = tokenizer([clinical_note], truncation=True, padding=True, max_length=128, return_tensors="pt")
-    with torch.no_grad():
-        outputs = raw_bert(**encoded)
-        text_embedding = outputs.last_hidden_state[:, 0, :].numpy()
+    with st.spinner("Analyzing clinical note..."):
+        text_embedding = get_bert_embedding(clinical_note)
 
-    # Concatenate with Vitals
-    vitals = np.array([[sbp, dbp, hr, rr, temp, spo2, pain]])
-    combined = np.concatenate([text_embedding, vitals], axis=1)
+        vitals = np.array([[sbp, dbp, hr, rr, temp, spo2, pain]])
+        combined = np.concatenate([text_embedding, vitals], axis=1)
 
-    # Predict Probabilities
-    probs = xgb_model.predict_proba(combined)[0]
-    pred_class = np.argmax(probs) + 1
-    
+        expected_features = xgb_model.n_features_in_
+        if combined.shape[1] != expected_features:
+            st.error(f"Feature mismatch: got {combined.shape[1]}, model expects {expected_features}")
+            st.stop()
+
+        probs = xgb_model.predict_proba(combined)[0]
+        pred_class = xgb_model.classes_[np.argmax(probs)]
+
     st.success(f"Predicted Acuity Tier: **ESI {pred_class}**")
-    st.bar_chart({f"ESI {i+1}": float(probs[i]) for i in range(5)})
+    st.bar_chart({f"ESI {xgb_model.classes_[i]}": float(probs[i]) for i in range(len(probs))})
